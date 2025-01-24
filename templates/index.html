@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DICOM Segmentation Tool</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #6C5CE7;
+            --secondary: #A8A4FF;
+            --accent: #FF7675;
+            --background: #2D2D39;
+            --text: #FFFFFF;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Poppins', sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a24 0%, #2D2D39 100%);
+            min-height: 100vh;
+            color: var(--text);
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(45, 45, 57, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 2rem;
+            font-weight: 600;
+            background: linear-gradient(45deg, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .custom-file-input {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            margin: 1.5rem 0;
+        }
+
+        .custom-file-input input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .file-label {
+            background: var(--primary);
+            color: white;
+            padding: 0.8rem 2rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 500;
+        }
+
+        .file-label:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);
+        }
+
+        #canvasContainer {
+            position: relative;
+            margin: 2rem auto;
+            width: 512px;
+            height: 512px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            border: 2px solid rgba(255,255,255,0.1);
+        }
+
+        #mainCanvas, #maskCanvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+
+        .tools {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            justify-content: center;
+            margin: 2rem 0;
+        }
+
+        .tool-group {
+            background: rgba(255,255,255,0.05);
+            padding: 1rem;
+            border-radius: 12px;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        button {
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: var(--text);
+            padding: 0.8rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 500;
+        }
+
+        button:hover {
+            background: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);
+        }
+
+        .tool-active {
+            background: var(--accent) !important;
+            box-shadow: 0 4px 15px rgba(255, 118, 117, 0.4);
+        }
+
+        input[type="range"] {
+            width: 120px;
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 2px;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        #status {
+            text-align: center;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .status-success {
+            background: rgba(40, 167, 69, 0.15);
+            color: #28a745;
+        }
+
+        .status-error {
+            background: rgba(220, 53, 69, 0.15);
+            color: #dc3545;
+        }
+
+        .slice-nav {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-weight: 500;
+        }
+
+        .slice-nav button {
+            padding: 0.6rem 1.2rem;
+        }
+
+        #brushSizeValue {
+            min-width: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🩺 DICOM Segmentation Studio</h1>
+        
+        <div class="custom-file-input">
+            <input type="file" id="dicomFiles" multiple accept=".dcm">
+            <label for="dicomFiles" class="file-label">
+                📁 Upload DICOM Files
+            </label>
+        </div>
+
+        <div id="status" class="status-success"></div>
+
+        <div class="tools">
+            <div class="tool-group slice-nav">
+                <button onclick="changeSlice(-1)">◀ Previous</button>
+                <span id="sliceInfo">Slice 0/0</span>
+                <button onclick="changeSlice(1)">Next ▶</button>
+            </div>
+
+            <div class="tool-group">
+                <div id="toolModes">
+                    <button id="brushBtn" class="tool-active" onclick="setTool('brush')">🖌️ Brush</button>
+                    <button id="eraseBtn" onclick="setTool('erase')">🧹 Erase</button>
+                </div>
+                
+                <div class="tool-group">
+                    <label>🖱️ Size: <span id="brushSizeValue">5</span></label>
+                    <input type="range" id="brushSize" min="1" max="30" value="5">
+                </div>
+
+                <button onclick="clearCanvas()">🗑️ Clear</button>
+                <button onclick="saveMask()">💾 Save Mask</button>
+            </div>
+        </div>
+
+        <div id="canvasContainer">
+            <canvas id="mainCanvas" width="512" height="512"></canvas>
+            <canvas id="maskCanvas" width="512" height="512"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let currentVolume = null;
+        let currentSlice = 0;
+        let totalSlices = 0;
+        let unsavedChanges = false;
+        const mainCanvas = document.getElementById('mainCanvas');
+        const mainCtx = mainCanvas.getContext('2d');
+        const maskCanvas = document.getElementById('maskCanvas');
+        const maskCtx = maskCanvas.getContext('2d');
+        let isDrawing = false;
+        let currentTool = 'brush';
+
+        // Initialize mask canvas
+        function initCanvas() {
+            maskCanvas.width = mainCanvas.width = 512;
+            maskCanvas.height = mainCanvas.height = 512;
+            maskCtx.fillStyle = 'rgba(0,255,0,0.5)';
+            maskCtx.strokeStyle = 'rgba(0,255,0,1)';
+            maskCtx.lineCap = 'round';
+            maskCtx.lineJoin = 'round';
+        }
+        initCanvas();
+
+        // Brush size display
+        document.getElementById('brushSize').addEventListener('input', function(e) {
+            document.getElementById('brushSizeValue').textContent = e.target.value;
+        });
+
+        // File upload handler
+        document.getElementById('dicomFiles').addEventListener('change', async function(e) {
+            const files = e.target.files;
+            if (files.length === 0) return;
+            
+            showStatus('Uploading and processing DICOM files...');
+            
+            const formData = new FormData();
+            for (const file of files) formData.append('files[]', file);
+
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                
+                const data = await response.json();
+                currentVolume = data.volume_id;
+                totalSlices = data.num_slices;
+                currentSlice = 0;
+                
+                updateSliceInfo();
+                await loadSlice(currentSlice);
+                showStatus('Upload complete!');
+            } catch (error) {
+                showStatus(`Upload failed: ${error.message}`, true);
+                console.error('Upload error:', error);
+            }
+        });
+
+        async function loadSlice(sliceIndex) {
+            showStatus(`Loading slice ${sliceIndex + 1}...`);
+            
+            try {
+                mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+
+                const response = await fetch(`/slice/${currentVolume}/${sliceIndex}`);
+                if (!response.ok) throw new Error('Failed to load slice');
+                
+                const data = await response.json();
+                
+                // Draw DICOM image
+                const imgData = new ImageData(data.columns, data.rows);
+                const pixelData = new Uint8ClampedArray(data.pixel_data);
+                for (let i = 0; i < pixelData.length; i++) {
+                    imgData.data[i*4] = imgData.data[i*4 + 1] = imgData.data[i*4 + 2] = pixelData[i];
+                    imgData.data[i*4 + 3] = 255;
+                }
+                mainCtx.putImageData(imgData, 0, 0);
+                
+                // Load existing mask
+                if (data.mask) {
+                    const maskImageData = maskCtx.createImageData(data.columns, data.rows);
+                    data.mask.forEach((val, i) => {
+                        if (val) {
+                            const idx = i * 4;
+                            maskImageData.data[idx] = 0;
+                            maskImageData.data[idx + 1] = 255;
+                            maskImageData.data[idx + 2] = 0;
+                            maskImageData.data[idx + 3] = 255;
+                        }
+                    });
+                    maskCtx.putImageData(maskImageData, 0, 0);
+                }
+                
+                unsavedChanges = false;
+                showStatus('');
+            } catch (error) {
+                showStatus(`Error loading slice: ${error.message}`, true);
+                console.error('Slice load error:', error);
+            }
+        }
+
+        async function changeSlice(offset) {
+            if (!currentVolume) return;
+            
+            const newSlice = currentSlice + offset;
+            if (newSlice >= 0 && newSlice < totalSlices) {
+                if (unsavedChanges) {
+                    if (confirm('You have unsaved changes. Save before navigating?')) {
+                        await saveCurrentMask();
+                    }
+                }
+                currentSlice = newSlice;
+                updateSliceInfo();
+                await loadSlice(currentSlice);
+            }
+        }
+
+        async function saveCurrentMask() {
+            if (!currentVolume) return;
+            
+            const maskImageData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+            const maskData = [];
+            
+            for (let i = 0; i < maskImageData.data.length; i += 4) {
+                maskData.push(maskImageData.data[i + 1] > 128 ? 1 : 0);
+            }
+
+            try {
+                await fetch(`/save_mask/${currentVolume}/${currentSlice}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mask: maskData })
+                });
+                unsavedChanges = false;
+            } catch (error) {
+                console.error('Auto-save error:', error);
+            }
+        }
+
+        function updateSliceInfo() {
+            document.getElementById('sliceInfo').textContent = 
+                `Slice ${currentSlice + 1}/${totalSlices}`;
+        }
+
+        function setTool(tool) {
+            currentTool = tool;
+            document.getElementById('brushBtn').classList.remove('tool-active');
+            document.getElementById('eraseBtn').classList.remove('tool-active');
+            document.getElementById(tool + 'Btn').classList.add('tool-active');
+        }
+
+        // Drawing functionality
+        let lastX = 0;
+        let lastY = 0;
+
+        function getMousePos(canvas, evt) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (evt.clientX - rect.left) * (canvas.width / rect.width),
+                y: (evt.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        maskCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const pos = getMousePos(maskCanvas, e);
+            [lastX, lastY] = [pos.x, pos.y];
+        });
+
+        maskCanvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            
+            const pos = getMousePos(maskCanvas, e);
+            
+            maskCtx.beginPath();
+            maskCtx.globalCompositeOperation = currentTool === 'erase' ? 'destination-out' : 'source-over';
+            maskCtx.strokeStyle = currentTool === 'erase' ? 'rgba(0,0,0,1)' : 'rgba(0,255,0,1)';
+            maskCtx.lineWidth = document.getElementById('brushSize').value;
+            maskCtx.lineCap = 'round';
+            
+            maskCtx.moveTo(lastX, lastY);
+            maskCtx.lineTo(pos.x, pos.y);
+            maskCtx.stroke();
+
+            [lastX, lastY] = [pos.x, pos.y];
+            unsavedChanges = true;
+        });
+
+        maskCanvas.addEventListener('mouseup', () => isDrawing = false);
+        maskCanvas.addEventListener('mouseout', () => isDrawing = false);
+
+        function clearCanvas() {
+            if (confirm('Are you sure you want to clear all annotations on this slice?')) {
+                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                unsavedChanges = true;
+            }
+        }
+
+        async function saveMask() {
+            if (!currentVolume) return;
+            
+            showStatus('Saving mask...');
+            try {
+                await saveCurrentMask();
+                showStatus('Mask saved successfully!');
+            } catch (error) {
+                showStatus(`Save failed: ${error.message}`, true);
+                console.error('Save error:', error);
+            }
+        }
+
+        function showStatus(message, isError = false) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = isError ? 'status-error' : 'status-success';
+        }
+    </script>
+</body>
+</html>
