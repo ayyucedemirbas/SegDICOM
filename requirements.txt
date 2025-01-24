@@ -1,0 +1,4 @@
+Flask
+pydicom
+numpy
+pandas
