@@ -1,1 +1,6 @@
 # SegDICOM
+
+
+### TODO
+
+- [ ] Labeling
