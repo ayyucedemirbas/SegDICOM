@@ -5,10 +5,13 @@ from flask import Flask, render_template, request, jsonify
 from pydicom.dataset import Dataset, FileDataset
 from pydicom.uid import generate_uid
 import datetime
+import csv
+import pandas as pd
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MASK_FOLDER'] = 'masks'
+app.config['CSV_PATH'] = 'annotations.csv'
 app.secret_key = 'supersecretkey'
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -37,7 +40,7 @@ class VolumeManager:
         all_slices = self._sort_slices(all_slices)
         self.volumes[vol_id] = {
             'slices': all_slices,
-            'masks': [None] * len(all_slices)
+            'masks': [{'mask': None, 'labels': []} for _ in range(len(all_slices))]
         }
         return vol_id
 
@@ -67,20 +70,23 @@ class VolumeManager:
             print(f"Sorting failed: {str(e)}")
             return slices
 
-    def save_mask(self, vol_id, slice_idx, mask_data):
+    def save_mask(self, vol_id, slice_idx, mask_data, labels):
         if vol_id in self.volumes and 0 <= slice_idx < len(self.volumes[vol_id]['slices']):
-            self.volumes[vol_id]['masks'][slice_idx] = mask_data
+            self.volumes[vol_id]['masks'][slice_idx] = {
+                'mask': mask_data,
+                'labels': labels
+            }
             return True
         return False
 
     def get_mask(self, vol_id, slice_idx):
         if vol_id in self.volumes and 0 <= slice_idx < len(self.volumes[vol_id]['masks']):
             return self.volumes[vol_id]['masks'][slice_idx]
-        return None
+        return {'mask': None, 'labels': []}
 
 volume_manager = VolumeManager()
 
-def create_segmentation_ds(ref_dicom, mask_array):
+def create_segmentation_ds(ref_dicom, mask_array, labels):
     file_meta = Dataset()
     file_meta.MediaStorageSOPClassUID = '1.2.840.10008.5.1.4.1.1.66.4'
     file_meta.MediaStorageSOPInstanceUID = generate_uid()
@@ -88,14 +94,12 @@ def create_segmentation_ds(ref_dicom, mask_array):
 
     ds = FileDataset('segmentation.dcm', {}, file_meta=file_meta, preamble=b"\0"*128)
     
-    # Required Patient/Study/Series attributes
     ds.PatientName = ref_dicom.get('PatientName', 'Anonymous')
     ds.PatientID = ref_dicom.get('PatientID', 'Unknown')
     ds.StudyInstanceUID = ref_dicom.get('StudyInstanceUID', generate_uid())
     ds.SeriesInstanceUID = generate_uid()
     ds.FrameOfReferenceUID = ref_dicom.get('FrameOfReferenceUID', generate_uid())
 
-    # Segmentation specific attributes
     ds.Modality = 'SEG'
     ds.SOPClassUID = '1.2.840.10008.5.1.4.1.1.66.4'
     ds.ContentLabel = 'ANNOTATION'
@@ -109,26 +113,23 @@ def create_segmentation_ds(ref_dicom, mask_array):
     ds.LossyImageCompression = '00'
     ds.SegmentationType = 'BINARY'
 
-    # Dimension Organization
     dim_org = Dataset()
     dim_org.DimensionOrganizationUID = generate_uid()
     ds.DimensionOrganizationSequence = [dim_org]
 
-    # Segment Sequence
     segment = Dataset()
     segment.SegmentNumber = 1
-    segment.SegmentLabel = 'ManualAnnotation'
+    segment.SegmentLabel = "|".join(labels)[:64]
     segment.SegmentAlgorithmType = 'MANUAL'
     
     seg_property = Dataset()
     seg_property.CodeValue = 'T-D0050'
     seg_property.CodingSchemeDesignator = 'SRT'
-    seg_property.CodeMeaning = 'Tissue'
+    seg_property.CodeMeaning = "|".join(labels)[:64]
     segment.SegmentedPropertyCategoryCodeSequence = [seg_property]
     
     ds.SegmentSequence = [segment]
 
-    # Shared Functional Groups
     shared_fg = Dataset()
     pixel_measures = Dataset()
     pixel_measures.PixelSpacing = ref_dicom.get('PixelSpacing', [1.0, 1.0])
@@ -136,14 +137,12 @@ def create_segmentation_ds(ref_dicom, mask_array):
     shared_fg.PixelMeasuresSequence = [pixel_measures]
     ds.SharedFunctionalGroupsSequence = [shared_fg]
 
-    # Per-frame Functional Groups
     frame_fg = Dataset()
     frame_content = Dataset()
     frame_content.DimensionIndexValues = [1, 1]
     frame_fg.FrameContentSequence = [frame_content]
     ds.PerFrameFunctionalGroupsSequence = [frame_fg]
 
-    # Pixel Data
     ds.Rows = ref_dicom.Rows
     ds.Columns = ref_dicom.Columns
     ds.PixelData = mask_array.astype(np.uint8).tobytes()
@@ -183,13 +182,15 @@ def serve_slice(vol_id, slice_idx):
 
         ds = volume['slices'][slice_idx]
         pixel_array = apply_windowing(ds.pixel_array, ds)
+        mask_info = volume_manager.get_mask(vol_id, slice_idx)
         
         return jsonify({
             'pixel_data': pixel_array.flatten().tolist(),
             'rows': ds.Rows,
             'columns': ds.Columns,
             'num_frames': len(volume['slices']),
-            'mask': volume_manager.get_mask(vol_id, slice_idx)
+            'mask': mask_info['mask'],
+            'labels': mask_info['labels']
         })
     except Exception as e:
         print(f"Slice error: {str(e)}")
@@ -203,25 +204,43 @@ def handle_save_mask(vol_id, slice_idx):
             return jsonify({'error': 'Invalid volume/slice'}), 404
 
         mask_data = request.json['mask']
+        raw_labels = request.json.get('labels', ['Unlabeled'])
+        labels = [l.strip() for l in raw_labels[0].split(',') if l.strip()]
+        
         ref_ds = volume['slices'][slice_idx]
         
-        # Validate mask dimensions
         expected_size = ref_ds.Rows * ref_ds.Columns
         if len(mask_data) != expected_size:
             return jsonify({
                 'error': f'Mask size mismatch. Expected {expected_size}, got {len(mask_data)}'
             }), 400
 
-        # Convert to numpy array and scale
         mask_array = np.array(mask_data, dtype=np.uint8).reshape(ref_ds.Rows, ref_ds.Columns) * 255
 
-        # Save to memory and disk
-        if not volume_manager.save_mask(vol_id, slice_idx, mask_data):
+        if not volume_manager.save_mask(vol_id, slice_idx, mask_data, labels):
             return jsonify({'error': 'Failed to store mask'}), 500
 
-        seg_ds = create_segmentation_ds(ref_ds, mask_array)
+        seg_ds = create_segmentation_ds(ref_ds, mask_array, labels)
         filename = f"seg_{vol_id}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.dcm"
-        seg_ds.save_as(os.path.join(app.config['MASK_FOLDER'], filename))
+        mask_path = os.path.join(app.config['MASK_FOLDER'], filename)
+        seg_ds.save_as(mask_path)
+        
+        # Save to CSV
+        csv_entry = {
+            'timestamp': datetime.datetime.now().isoformat(),
+            'volume_id': vol_id,
+            'slice_index': slice_idx,
+            'labels': ', '.join(labels),
+            'dcm_path': mask_path
+        }
+        
+        df = pd.DataFrame([csv_entry])
+        df.to_csv(
+            app.config['CSV_PATH'],
+            mode='a',
+            header=not os.path.exists(app.config['CSV_PATH']),
+            index=False
+        )
         
         return jsonify({'message': 'Mask saved successfully'})
     except Exception as e:

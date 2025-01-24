@@ -191,11 +191,60 @@
             min-width: 20px;
             text-align: center;
         }
+
+        /* Label Styles */
+        .label-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            min-width: 200px;
+        }
+
+        #labelInput {
+            padding: 0.5rem;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.9);
+            color: #000;
+        }
+
+        #currentLabels {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .label-tag {
+            background: var(--primary);
+            color: white;
+            padding: 0.3rem 0.8rem;
+            border-radius: 15px;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .label-tag button {
+            background: none;
+            border: none;
+            color: white;
+            padding: 0;
+            font-size: 1rem;
+        }
+
+        #labelPresets {
+            padding: 0.5rem;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.9);
+            color: #000;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🩺 DICOM Segmentation Studio</h1>
+        <h1>🩺 SegDICOM</h1>
         
         <div class="custom-file-input">
             <input type="file" id="dicomFiles" multiple accept=".dcm">
@@ -224,7 +273,22 @@
                     <input type="range" id="brushSize" min="1" max="30" value="5">
                 </div>
 
-                <button onclick="clearCanvas()">🗑️ Clear</button>
+                <div class="tool-group label-group">
+                    <input type="text" id="labelInput" placeholder="Enter labels (comma-separated)">
+                    <div id="currentLabels"></div>
+                </div>
+
+                <div class="tool-group">
+                    <select id="labelPresets" onchange="addPresetLabel(this.value)">
+                        <option value="">Add Preset</option>
+                        <option value="Tumor">Tumor</option>
+                        <option value="Organ">Organ</option>
+                        <option value="Lesion">Lesion</option>
+                        <option value="Bone">Bone</option>
+                    </select>
+                </div>
+
+                <button onclick="clearCanvas()">🗑️ Clear All</button>
                 <button onclick="saveMask()">💾 Save Mask</button>
             </div>
         </div>
@@ -247,7 +311,6 @@
         let isDrawing = false;
         let currentTool = 'brush';
 
-        // Initialize mask canvas
         function initCanvas() {
             maskCanvas.width = mainCanvas.width = 512;
             maskCanvas.height = mainCanvas.height = 512;
@@ -258,12 +321,10 @@
         }
         initCanvas();
 
-        // Brush size display
         document.getElementById('brushSize').addEventListener('input', function(e) {
             document.getElementById('brushSizeValue').textContent = e.target.value;
         });
 
-        // File upload handler
         document.getElementById('dicomFiles').addEventListener('change', async function(e) {
             const files = e.target.files;
             if (files.length === 0) return;
@@ -312,7 +373,7 @@
                 }
                 mainCtx.putImageData(imgData, 0, 0);
                 
-                // Load existing mask
+                // Load existing mask and labels
                 if (data.mask) {
                     const maskImageData = maskCtx.createImageData(data.columns, data.rows);
                     data.mask.forEach((val, i) => {
@@ -325,6 +386,11 @@
                         }
                     });
                     maskCtx.putImageData(maskImageData, 0, 0);
+                    document.getElementById('labelInput').value = data.labels.join(', ');
+                    updateLabelDisplay();
+                } else {
+                    document.getElementById('labelInput').value = '';
+                    updateLabelDisplay();
                 }
                 
                 unsavedChanges = false;
@@ -333,6 +399,39 @@
                 showStatus(`Error loading slice: ${error.message}`, true);
                 console.error('Slice load error:', error);
             }
+        }
+
+        function updateLabelDisplay() {
+            const input = document.getElementById('labelInput');
+            const display = document.getElementById('currentLabels');
+            const labels = input.value.split(',').map(l => l.trim()).filter(l => l);
+            
+            display.innerHTML = labels.map(label => `
+                <div class="label-tag">
+                    ${label}
+                    <button onclick="removeLabel('${label}')">×</button>
+                </div>
+            `).join('');
+        }
+
+        function addPresetLabel(value) {
+            if (value) {
+                const input = document.getElementById('labelInput');
+                const current = input.value.split(',').map(l => l.trim()).filter(l => l);
+                if (!current.includes(value)) {
+                    input.value = [...current, value].join(', ');
+                    updateLabelDisplay();
+                    unsavedChanges = true;
+                }
+            }
+        }
+
+        function removeLabel(labelToRemove) {
+            const input = document.getElementById('labelInput');
+            const labels = input.value.split(',').map(l => l.trim()).filter(l => l);
+            input.value = labels.filter(l => l !== labelToRemove).join(', ');
+            updateLabelDisplay();
+            unsavedChanges = true;
         }
 
         async function changeSlice(offset) {
@@ -356,6 +455,10 @@
             
             const maskImageData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
             const maskData = [];
+            const labels = document.getElementById('labelInput').value
+                .split(',')
+                .map(l => l.trim())
+                .filter(l => l);
             
             for (let i = 0; i < maskImageData.data.length; i += 4) {
                 maskData.push(maskImageData.data[i + 1] > 128 ? 1 : 0);
@@ -365,7 +468,10 @@
                 await fetch(`/save_mask/${currentVolume}/${currentSlice}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mask: maskData })
+                    body: JSON.stringify({ 
+                        mask: maskData,
+                        labels: labels.length > 0 ? labels : ['Unlabeled']
+                    })
                 });
                 unsavedChanges = false;
             } catch (error) {
@@ -385,7 +491,6 @@
             document.getElementById(tool + 'Btn').classList.add('tool-active');
         }
 
-        // Drawing functionality
         let lastX = 0;
         let lastY = 0;
 
@@ -428,6 +533,8 @@
         function clearCanvas() {
             if (confirm('Are you sure you want to clear all annotations on this slice?')) {
                 maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                document.getElementById('labelInput').value = '';
+                updateLabelDisplay();
                 unsavedChanges = true;
             }
         }
@@ -450,6 +557,12 @@
             statusEl.textContent = message;
             statusEl.className = isError ? 'status-error' : 'status-success';
         }
+
+        // Event Listeners
+        document.getElementById('labelInput').addEventListener('input', function() {
+            updateLabelDisplay();
+            unsavedChanges = true;
+        });
     </script>
 </body>
 </html>
